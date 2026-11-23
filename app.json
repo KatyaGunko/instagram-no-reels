@@ -1,0 +1,22 @@
+{
+  "expo": {
+    "name": "Instagram No Reels",
+    "slug": "instagram-no-reels",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "scheme": "instagram-no-reels",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.personal.instagramnoreels",
+      "infoPlist": {
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": false
+        }
+      }
+    },
+    "platforms": ["ios"],
+    "plugins": []
+  }
+}
