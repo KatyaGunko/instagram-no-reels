@@ -7,9 +7,9 @@
  * this module only; leave the WebView shell alone.
  *
  * Policy (locked): hide UI only. Do NOT block navigation to /reels or /reel/ URLs.
- * The Explore recommendation feed, and the loading indicator beside it, are hidden on
- * /explore and /explore/search while the search field is empty. A typed query, or
- * /explore/tags|locations|places, shows results.
+ * On /explore and empty /explore/search, everything under the search bar is hidden,
+ * including the recommendation grid and the loading spinner. The search field and the
+ * bottom tab bar stay. A typed query, or /explore/tags|locations|places, shows results.
  */
 
 export const HIDE_REELS_SCRIPT = `
@@ -113,17 +113,6 @@ export const HIDE_REELS_SCRIPT = `
     return false;
   }
 
-  function isChrome(el) {
-    if (!el || el.nodeType !== 1) return false;
-    if (el.matches && el.matches('nav, [role="navigation"], [role="tablist"]')) return true;
-    return !!(el.closest && el.closest('nav, [role="navigation"], [role="tablist"]')) ||
-      !!el.querySelector('nav, [role="navigation"], [role="tablist"]');
-  }
-
-  function hasExploreMedia(el) {
-    return !!el.querySelector('img, video, a[href*="/p/"], a[href*="/reel"]');
-  }
-
   function findSearchField() {
     var fields = document.querySelectorAll('input, textarea, [role="searchbox"]');
     for (var i = 0; i < fields.length; i++) {
@@ -132,28 +121,126 @@ export const HIDE_REELS_SCRIPT = `
     return null;
   }
 
-  /* The recommendation feed is the sibling of the search bar, not a stable CSS grid. */
-  function exploreFeedNodes(search) {
+  function isLoader(el) {
+    if (!el || el.nodeType !== 1 || !el.matches) return false;
+    if (el.matches('[role="progressbar"], [data-visualcompletion="loading-state"]')) return true;
+    var label = (el.getAttribute('aria-label') || '').toLowerCase();
+    if (label.indexOf('load') !== -1 || label.indexOf('ładow') !== -1 || label.indexOf('wczyt') !== -1) return true;
+    var name = (el.localName || el.tagName || '').toLowerCase();
+    return name === 'svg' && (el.getAttribute('viewBox') || '') === '0 0 100 100';
+  }
+
+  function tabScore(el) {
+    var score = 0;
+    var seen = {};
+    var links = el.querySelectorAll('a[href], [role="link"], [role="tab"]');
+    for (var i = 0; i < links.length; i++) {
+      var href = links[i].getAttribute('href') || '';
+      var path = href.split('?')[0].split('#')[0];
+      if (path.length > 1 && path.charAt(path.length - 1) === '/') path = path.slice(0, -1);
+      var kind = '';
+      if (path === '' || path === '/' || path === '/home') kind = 'home';
+      else if (path === '/explore') kind = 'explore';
+      else if (path === '/reels') kind = 'reels';
+      else if (path.indexOf('/direct') === 0) kind = 'direct';
+      else if (/^\\/[A-Za-z0-9._]+$/.test(path)) kind = 'profile';
+      if (kind && !seen[kind]) {
+        seen[kind] = 1;
+        score++;
+      }
+    }
+    return score;
+  }
+
+  /* Bottom bar only — not an ancestor that also contains the feed or the spinner. */
+  function looksLikeTabBar(el, search) {
+    if (!el || el.nodeType !== 1) return false;
+    if (search && (el === search || el.contains(search))) return false;
+    if (isLoader(el) || (el.querySelector && el.querySelector('[role="progressbar"], [data-visualcompletion="loading-state"], svg[viewBox="0 0 100 100"]'))) {
+      return false;
+    }
+    if (el.matches && el.matches('nav, [role="navigation"], [role="tablist"]')) return true;
+    if (el.closest && el.closest('nav, [role="navigation"], [role="tablist"]')) return true;
+    if (el.getBoundingClientRect && window.innerHeight > 200 && window.innerWidth > 200) {
+      var rect = el.getBoundingClientRect();
+      if (
+        rect.width >= window.innerWidth * 0.8 &&
+        rect.height >= 40 &&
+        rect.height <= 130 &&
+        rect.bottom >= window.innerHeight - 24 &&
+        rect.top >= window.innerHeight * 0.7 &&
+        el.querySelectorAll('svg, img').length >= 3
+      ) {
+        return true;
+      }
+    }
+    var kids = el.children;
+    var extra = false;
+    for (var i = 0; i < kids.length; i++) {
+      var kid = kids[i];
+      if (kid.querySelector && kid.querySelector('input, textarea, [role="searchbox"], article, [role="progressbar"]')) {
+        return false;
+      }
+      if (kid.matches && kid.matches('a, svg, img, button, span, [role="link"], [role="tab"]')) continue;
+      if (kid.querySelector && kid.querySelector('a, [role="link"], [role="tab"], button, svg, img')) continue;
+      extra = true;
+    }
+    if (extra) return false;
+    var svgs = el.querySelectorAll('svg').length;
+    var imgs = el.querySelectorAll('img').length;
+    var clickable = el.querySelectorAll('a, [role="link"], [role="tab"], button').length;
+    if (svgs >= 3 && imgs <= 2 && clickable >= 3) return true;
+    return tabScore(el) >= 2 && (svgs >= 2 || clickable >= 3);
+  }
+
+  function findTabBars(search) {
+    var bars = [];
+    var nodes = document.querySelectorAll('div, nav, section, footer');
+    for (var i = 0; i < nodes.length; i++) {
+      if (looksLikeTabBar(nodes[i], search)) bars.push(nodes[i]);
+    }
+    return bars;
+  }
+
+  function containsTabBar(el, bars) {
+    for (var i = 0; i < bars.length; i++) {
+      if (el === bars[i] || el.contains(bars[i])) return true;
+    }
+    return false;
+  }
+
+  function isSearchDecoration(el, container, search) {
+    if (!search || !container.contains(search) || !el.matches) return false;
+    if (isLoader(el)) return false;
+    if (el.querySelector('[role="progressbar"], [data-visualcompletion="loading-state"], svg[viewBox="0 0 100 100"]')) return false;
+    return el.matches('button, svg, label, input, textarea, [role="button"]');
+  }
+
+  /*
+   * Hide every branch that is not the search field and not the tab bar.
+   * The spinner is often outside the post grid (or replaces it), so it is not
+   * enough to hide nodes that contain posts.
+   */
+  function collectExploreContent(container, search, bars) {
     var found = [];
-    if (!search) return found;
-    var branch = search;
-    while (branch.parentElement && branch.parentElement !== document.documentElement) {
-      var parent = branch.parentElement;
-      var siblingHasMedia = false;
-      for (var i = 0; i < parent.children.length; i++) {
-        var child = parent.children[i];
-        if (child === branch || isChrome(child)) continue;
-        if (hasExploreMedia(child)) siblingHasMedia = true;
+    if (!container || !container.children) return found;
+    var kids = container.children;
+    for (var i = 0; i < kids.length; i++) {
+      var child = kids[i];
+      if (!child || child.nodeType !== 1) continue;
+      var tag = child.tagName;
+      if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'LINK' || tag === 'NOSCRIPT' || tag === 'TEMPLATE') continue;
+      if (search && (child === search || child.contains(search))) {
+        found = found.concat(collectExploreContent(child, search, bars));
+        continue;
       }
-      if (siblingHasMedia) {
-        for (var j = 0; j < parent.children.length; j++) {
-          var sibling = parent.children[j];
-          if (sibling === branch || isChrome(sibling)) continue;
-          found.push(sibling);
-        }
-        return found;
+      if (looksLikeTabBar(child, search)) continue;
+      if (containsTabBar(child, bars)) {
+        found = found.concat(collectExploreContent(child, search, bars));
+        continue;
       }
-      branch = parent;
+      if (isSearchDecoration(child, container, search)) continue;
+      found.push(child);
     }
     return found;
   }
@@ -166,26 +253,22 @@ export const HIDE_REELS_SCRIPT = `
     }
 
     var searchField = findSearchField();
-    var grids = exploreFeedNodes(searchField);
-    var root = document.querySelector('main') || document.body;
-    var loaders = root.querySelectorAll(
-      '[role="progressbar"], [data-visualcompletion="loading-state"], [aria-label="Loading"], [aria-label="Loading…"], [aria-label="Loading..."]'
+    var bars = findTabBars(searchField);
+    var grids = searchField ? collectExploreContent(document.body, searchField, bars) : [];
+    var loaders = document.querySelectorAll(
+      '[role="progressbar"], [data-visualcompletion="loading-state"], svg[viewBox="0 0 100 100"], svg[aria-label], [aria-label]'
     );
     for (var p = 0; p < loaders.length; p++) {
       var loader = loaders[p];
-      if (isChrome(loader)) continue;
+      if (!isLoader(loader)) continue;
       if (searchField && (loader === searchField || searchField.contains(loader) || loader.contains(searchField))) continue;
-      grids.push(loader);
-    }
-    if (!grids.length) {
-      var main = document.querySelector('main') || document.body;
-      var divs = main.querySelectorAll('div, section, article');
-      for (var i = 0; i < divs.length; i++) {
-        var el = divs[i];
-        if (isChrome(el) || el.querySelector('input, textarea, [role="searchbox"], [role="search"]')) continue;
-        if (!hasExploreMedia(el)) continue;
-        grids.push(el);
+      if (containsTabBar(loader, bars) && looksLikeTabBar(loader, searchField)) continue;
+      var insideBar = false;
+      for (var b = 0; b < bars.length; b++) {
+        if (bars[b] === loader || bars[b].contains(loader)) insideBar = true;
       }
+      if (insideBar) continue;
+      grids.push(loader);
     }
 
     var outermost = [];
@@ -203,7 +286,13 @@ export const HIDE_REELS_SCRIPT = `
     for (var m = 0; m < marked.length; m++) {
       if (outermost.indexOf(marked[m]) === -1) unmarkExploreGrid(marked[m]);
     }
-    for (var n = 0; n < outermost.length; n++) markExploreGrid(outermost[n]);
+    for (var n = 0; n < outermost.length; n++) {
+      var node = outermost[n];
+      if (!node || node === document.body || node === document.documentElement) continue;
+      if (searchField && (node === searchField || node.contains(searchField))) continue;
+      if (looksLikeTabBar(node, searchField)) continue;
+      markExploreGrid(node);
+    }
   }
 
   function markExploreGrid(el) {
