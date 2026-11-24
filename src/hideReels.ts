@@ -7,8 +7,8 @@
  * this module only; leave the WebView shell alone.
  *
  * Policy (locked): hide UI only. Do NOT block navigation to /reels or /reel/ URLs.
- * The Explore grid is hidden only on /explore while search is empty. A typed query,
- * a search-results list, or /explore/tags|search|locations leaves results visible.
+ * The Explore recommendation feed is hidden on /explore and /explore/search while the
+ * search field is empty. A typed query, or /explore/tags|locations|places, shows results.
  */
 
 export const HIDE_REELS_SCRIPT = `
@@ -86,8 +86,8 @@ export const HIDE_REELS_SCRIPT = `
     }
   }
 
-  function isPlainExplore() {
-    return /^\\/explore\\/?$/.test(location.pathname);
+  function isExploreHome() {
+    return /^\\/explore\\/?$/.test(location.pathname) || /^\\/explore\\/search\\/?$/.test(location.pathname);
   }
 
   function isSearchField(field) {
@@ -99,8 +99,9 @@ export const HIDE_REELS_SCRIPT = `
   }
 
   function searchActive() {
-    if (/\\/explore\\/(search|tags|locations|places)\\b/.test(location.pathname)) return true;
-    if (/[?&]q=/.test(location.search)) return true;
+    if (/\\/explore\\/(tags|locations|places)\\b/.test(location.pathname)) return true;
+    if (/\\/explore\\/search\\/.+/.test(location.pathname)) return true;
+    if (/[?&]q=[^&]+/.test(location.search)) return true;
     var fields = document.querySelectorAll('input, textarea, [role="searchbox"]');
     for (var i = 0; i < fields.length; i++) {
       var field = fields[i];
@@ -111,43 +112,68 @@ export const HIDE_REELS_SCRIPT = `
     return false;
   }
 
-  function looksLikeExploreMosaic(el) {
-    if (el.querySelector('input, textarea, [role="searchbox"], [role="search"]')) return false;
-    var tiles = el.querySelectorAll('img, video, a[href*="/p/"], a[href*="/reel"]');
-    if (tiles.length < 3) return false;
-    var columns = '';
-    try {
-      columns = (getComputedStyle(el).gridTemplateColumns || '').trim();
-    } catch (e) {
-      return false;
+  function isChrome(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (el.matches && el.matches('nav, [role="navigation"], [role="tablist"]')) return true;
+    return !!(el.closest && el.closest('nav, [role="navigation"], [role="tablist"]')) ||
+      !!el.querySelector('nav, [role="navigation"], [role="tablist"]');
+  }
+
+  function hasExploreMedia(el) {
+    return !!el.querySelector('img, video, a[href*="/p/"], a[href*="/reel"]');
+  }
+
+  function findSearchField() {
+    var fields = document.querySelectorAll('input, textarea, [role="searchbox"]');
+    for (var i = 0; i < fields.length; i++) {
+      if (isSearchField(fields[i])) return fields[i];
     }
-    if (!columns || columns === 'none') return false;
-    var repeat = /repeat\\(\\s*(\\d+)/i.exec(columns);
-    if (repeat) return parseInt(repeat[1], 10) >= 3;
-    return columns.split(/\\s+/).filter(Boolean).length >= 3;
+    return null;
+  }
+
+  /* The recommendation feed is the sibling of the search bar, not a stable CSS grid. */
+  function exploreFeedNodes(search) {
+    var found = [];
+    if (!search) return found;
+    var branch = search;
+    while (branch.parentElement && branch.parentElement !== document.documentElement) {
+      var parent = branch.parentElement;
+      var siblingHasMedia = false;
+      for (var i = 0; i < parent.children.length; i++) {
+        var child = parent.children[i];
+        if (child === branch || isChrome(child)) continue;
+        if (hasExploreMedia(child)) siblingHasMedia = true;
+      }
+      if (siblingHasMedia) {
+        for (var j = 0; j < parent.children.length; j++) {
+          var sibling = parent.children[j];
+          if (sibling === branch || isChrome(sibling)) continue;
+          if (hasExploreMedia(sibling)) found.push(sibling);
+        }
+        return found;
+      }
+      branch = parent;
+    }
+    return found;
   }
 
   function hideExploreGrid() {
     var marked = document.querySelectorAll('[' + EXPLORE_MARK + ']');
-    if (!isPlainExplore() || searchActive()) {
+    if (!isExploreHome() || searchActive()) {
       for (var c = 0; c < marked.length; c++) unmarkExploreGrid(marked[c]);
       return;
     }
 
-    var main = document.querySelector('main') || document.body;
-    var divs = main.querySelectorAll('div');
-    var grids = [];
-    for (var i = 0; i < divs.length; i++) {
-      var el = divs[i];
-      var display = '';
-      try {
-        display = getComputedStyle(el).display;
-      } catch (e) {
-        continue;
+    var grids = exploreFeedNodes(findSearchField());
+    if (!grids.length) {
+      var main = document.querySelector('main') || document.body;
+      var divs = main.querySelectorAll('div, section, article');
+      for (var i = 0; i < divs.length; i++) {
+        var el = divs[i];
+        if (isChrome(el) || el.querySelector('input, textarea, [role="searchbox"], [role="search"]')) continue;
+        if (!hasExploreMedia(el)) continue;
+        grids.push(el);
       }
-      if (display !== 'grid') continue;
-      if (!looksLikeExploreMosaic(el)) continue;
-      grids.push(el);
     }
 
     var outermost = [];
