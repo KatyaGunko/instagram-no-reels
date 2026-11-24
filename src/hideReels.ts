@@ -10,6 +10,7 @@
  * On /explore and empty /explore/search, everything under the search bar is hidden,
  * including the recommendation grid and the loading spinner. The search field and the
  * bottom tab bar stay. A typed query, or /explore/tags|locations|places, shows results.
+ * Vertical swipes on an open reel viewer do not change the clip. Feed scrolling is unchanged.
  */
 
 export const HIDE_REELS_SCRIPT = `
@@ -47,7 +48,8 @@ export const HIDE_REELS_SCRIPT = `
   CSS +=
     '\\n[data-ig-explore-grid="1"]{display:none!important;visibility:hidden!important;pointer-events:none!important;}' +
     /* Search UI and its results stay visible even when a result links to a Reel. */
-    '\\n[role="search"] a[href*="/reel"],[role="search"] a[href*="/reels"],[role="listbox"] a[href*="/reel"],[role="listbox"] a[href*="/reels"]{display:revert!important;visibility:visible!important;pointer-events:auto!important;}';
+    '\\n[role="search"] a[href*="/reel"],[role="search"] a[href*="/reels"],[role="listbox"] a[href*="/reel"],[role="listbox"] a[href*="/reels"]{display:revert!important;visibility:visible!important;pointer-events:auto!important;}' +
+    '\\n[data-ig-reel-lock="1"]{touch-action:none!important;}';
 
   var EXPLORE_MARK = 'data-ig-explore-grid';
 
@@ -354,6 +356,149 @@ export const HIDE_REELS_SCRIPT = `
 
   document.addEventListener('input', schedule, true);
   document.addEventListener('keyup', schedule, true);
+
+  /* Cancel vertical swipes that would change the reel. Feed videos stay scrollable. */
+  var REEL_LOCK = 'data-ig-reel-lock';
+  var swipe = null;
+
+  function asEl(node) {
+    if (!node) return null;
+    if (node.nodeType === 1) return node;
+    return node.parentElement || null;
+  }
+
+  function onReelRoute() {
+    var path = location.pathname || '';
+    return path === '/reels' || path.indexOf('/reels/') === 0 || path.indexOf('/reel/') === 0;
+  }
+
+  function inCommentsSheet(el) {
+    var dialog = el.closest && el.closest('[role="dialog"]');
+    if (!dialog) return false;
+    return !dialog.querySelector('video');
+  }
+
+  function isFixedOrDialog(el) {
+    if (!el || el === document.body || el === document.documentElement) return false;
+    var role = el.getAttribute && el.getAttribute('role');
+    if (role === 'dialog' || (el.getAttribute && el.getAttribute('aria-modal') === 'true')) return true;
+    try {
+      return window.getComputedStyle(el).position === 'fixed';
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function coversViewport(el) {
+    if (!el || !el.getBoundingClientRect || el === document.body || el === document.documentElement) return false;
+    var rect = el.getBoundingClientRect();
+    var h = window.innerHeight || 0;
+    var w = window.innerWidth || 0;
+    if (h < 200 || w < 200) return false;
+    return rect.top <= 48 && rect.width >= w * 0.8 && rect.height >= h * 0.72 && rect.bottom >= h * 0.9;
+  }
+
+  function reelSurface(target) {
+    var el = asEl(target);
+    if (!el || inCommentsSheet(el)) return null;
+    if (onReelRoute()) return el;
+    var node = el;
+    while (node && node !== document.body && node !== document.documentElement) {
+      var label = ((node.getAttribute && node.getAttribute('aria-label')) || '').toLowerCase();
+      var named = label.indexOf('video player') !== -1;
+      var hasVideo = node.tagName === 'VIDEO' || !!(node.querySelector && node.querySelector('video'));
+      var lifted = isFixedOrDialog(node);
+      if (hasVideo && coversViewport(node) && (lifted || (named && !(node.closest && node.closest('article'))))) {
+        return node;
+      }
+      node = node.parentElement;
+    }
+    return null;
+  }
+
+  function armReelLock(el) {
+    var surface = reelSurface(el);
+    if (!surface || surface === document.body || surface === document.documentElement) return;
+    if (surface.getAttribute(REEL_LOCK) === '1') return;
+    surface.setAttribute(REEL_LOCK, '1');
+    surface.style.setProperty('touch-action', 'none', 'important');
+  }
+
+  function releaseStaleReelLocks() {
+    var locked = document.querySelectorAll('[' + REEL_LOCK + ']');
+    for (var i = 0; i < locked.length; i++) {
+      if (reelSurface(locked[i])) continue;
+      locked[i].removeAttribute(REEL_LOCK);
+      locked[i].style.removeProperty('touch-action');
+    }
+  }
+
+  function blockGesture(e) {
+    if (e.cancelable) e.preventDefault();
+    e.stopPropagation();
+    if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+  }
+
+  function onSwipeStart(e) {
+    var point = e.touches && e.touches.length === 1 ? e.touches[0] : null;
+    if (!point && e.pointerType && e.pointerType !== 'mouse' && typeof e.clientX === 'number') point = e;
+    if (!point || (e.touches && e.touches.length > 1)) {
+      swipe = null;
+      return;
+    }
+    if (!reelSurface(e.target)) {
+      swipe = null;
+      return;
+    }
+    armReelLock(e.target);
+    swipe = { x: point.clientX, y: point.clientY, block: false, pointer: !e.touches };
+  }
+
+  function onSwipeMove(e) {
+    if (!swipe) return;
+    if (swipe.pointer && e.touches) return;
+    if (!swipe.pointer && !e.touches) return;
+    var point = e.touches ? e.touches[0] : e;
+    if (!point || typeof point.clientY !== 'number') return;
+    var dx = point.clientX - swipe.x;
+    var dy = point.clientY - swipe.y;
+    if (!swipe.block) {
+      if (dx * dx + dy * dy < 64) return;
+      if (Math.abs(dy) <= Math.abs(dx)) {
+        swipe = null;
+        return;
+      }
+      swipe.block = true;
+    }
+    blockGesture(e);
+  }
+
+  function onSwipeEnd(e) {
+    var isPointer = e.type.indexOf('pointer') === 0;
+    if (!swipe || swipe.pointer !== isPointer) return;
+    if (swipe.block) blockGesture(e);
+    swipe = null;
+  }
+
+  window.addEventListener('touchstart', onSwipeStart, true);
+  window.addEventListener('touchmove', onSwipeMove, { capture: true, passive: false });
+  window.addEventListener('touchend', onSwipeEnd, { capture: true, passive: false });
+  window.addEventListener('touchcancel', onSwipeEnd, { capture: true, passive: false });
+  window.addEventListener('pointerdown', onSwipeStart, true);
+  window.addEventListener('pointermove', onSwipeMove, { capture: true, passive: false });
+  window.addEventListener('pointerup', onSwipeEnd, true);
+  window.addEventListener('pointercancel', onSwipeEnd, true);
+  window.addEventListener('wheel', function (e) {
+    if (!reelSurface(e.target)) return;
+    if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+    blockGesture(e);
+  }, { capture: true, passive: false });
+
+  var previousApply = apply;
+  apply = function () {
+    previousApply();
+    releaseStaleReelLocks();
+  };
 
   true;
 })();
