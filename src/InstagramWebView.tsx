@@ -20,10 +20,6 @@ import { HIDE_REELS_SCRIPT } from './hideReels';
 
 const INSTAGRAM_URL = 'https://www.instagram.com/';
 
-/** Mobile Safari UA — Instagram login / layout behave better than the default WebView UA. */
-const MOBILE_SAFARI_UA =
-  'Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Mobile/15E148 Safari/604.1';
-
 /**
  * react-native-webview’s cross-platform prop intersection can collapse to `never`
  * under stricter TS + RN 0.88 typings. Local props + cast avoid that breakage.
@@ -43,6 +39,8 @@ type WebViewProps = {
   applicationNameForUserAgent?: string;
   sharedCookiesEnabled?: boolean;
   thirdPartyCookiesEnabled?: boolean;
+  cacheEnabled?: boolean;
+  incognito?: boolean;
   setSupportMultipleWindows?: boolean;
   onShouldStartLoadWithRequest?: () => boolean;
   onNavigationStateChange?: (nav: WebViewNavigation) => void;
@@ -110,10 +108,15 @@ export function InstagramWebView() {
           ref={webRef}
           source={{ uri: INSTAGRAM_URL }}
           style={styles.webview}
-          userAgent={MOBILE_SAFARI_UA}
-          applicationNameForUserAgent="Safari"
-          // Persist session cookies across launches where the OS allows it.
-          sharedCookiesEnabled
+          // Use this iOS version's own WebKit user agent. A hardcoded older
+          // Safari string makes Instagram treat every launch as a new device
+          // and ask for a verification code again.
+          cacheEnabled
+          incognito={false}
+          // Keep cookies in WKWebView's persistent store. Sharing them with
+          // NSHTTPCookieStorage drops HttpOnly session cookies and writes the
+          // incomplete jar back on the next launch.
+          sharedCookiesEnabled={false}
           thirdPartyCookiesEnabled
           // Stay inside the WebView for all targets (incl. window.open / target=_blank).
           setSupportMultipleWindows={false}

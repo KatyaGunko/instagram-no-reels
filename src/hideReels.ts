@@ -378,42 +378,76 @@ export const HIDE_REELS_SCRIPT = `
     return !dialog.querySelector('video');
   }
 
-  function isFixedOrDialog(el) {
+  function isDialog(el) {
     if (!el || el === document.body || el === document.documentElement) return false;
     var role = el.getAttribute && el.getAttribute('role');
-    if (role === 'dialog' || (el.getAttribute && el.getAttribute('aria-modal') === 'true')) return true;
+    return role === 'dialog' || (el.getAttribute && el.getAttribute('aria-modal') === 'true');
+  }
+
+  function positionOf(el) {
     try {
-      return window.getComputedStyle(el).position === 'fixed';
+      return window.getComputedStyle(el).position || '';
     } catch (e) {
-      return false;
+      return '';
     }
   }
 
-  function coversViewport(el) {
+  /* A viewer layer, not the in-feed scroller. Absolute counts: reels are often absolute inside a transformed parent. */
+  function hasLiftedAncestor(el) {
+    var node = el;
+    var h = window.innerHeight || 0;
+    var w = window.innerWidth || 0;
+    while (node && node !== document.documentElement) {
+      if (isDialog(node)) return true;
+      var pos = positionOf(node);
+      if (pos === 'fixed' || pos === 'absolute' || pos === 'sticky') {
+        var rect = node.getBoundingClientRect ? node.getBoundingClientRect() : null;
+        if (rect && h > 200 && rect.height >= h * 0.65 && rect.width >= w * 0.65) return true;
+      }
+      node = node.parentElement;
+    }
+    return false;
+  }
+
+  /* Large on-screen video. Does not require the box to touch the top and bottom edges. */
+  function isBigVideoBox(el) {
     if (!el || !el.getBoundingClientRect || el === document.body || el === document.documentElement) return false;
     var rect = el.getBoundingClientRect();
     var h = window.innerHeight || 0;
     var w = window.innerWidth || 0;
     if (h < 200 || w < 200) return false;
-    return rect.top <= 48 && rect.width >= w * 0.8 && rect.height >= h * 0.72 && rect.bottom >= h * 0.9;
+    return rect.width >= w * 0.6 && rect.height >= h * 0.5 && rect.bottom > h * 0.35 && rect.top < h * 0.6;
+  }
+
+  function playerFrom(el) {
+    var node = el;
+    var labeled = null;
+    while (node && node !== document.body) {
+      var label = ((node.getAttribute && node.getAttribute('aria-label')) || '').toLowerCase();
+      if (!labeled && label.indexOf('video player') !== -1) labeled = node;
+      node = node.parentElement;
+    }
+    if (labeled) return labeled;
+    if (el.closest && el.closest('video')) return el.closest('video');
+    node = el;
+    while (node && node !== document.body) {
+      if (node.querySelector && node.querySelector('video') && hasLiftedAncestor(node)) return node;
+      node = node.parentElement;
+    }
+    return null;
   }
 
   function reelSurface(target) {
     var el = asEl(target);
     if (!el || inCommentsSheet(el)) return null;
     if (onReelRoute()) return el;
-    var node = el;
-    while (node && node !== document.body && node !== document.documentElement) {
-      var label = ((node.getAttribute && node.getAttribute('aria-label')) || '').toLowerCase();
-      var named = label.indexOf('video player') !== -1;
-      var hasVideo = node.tagName === 'VIDEO' || !!(node.querySelector && node.querySelector('video'));
-      var lifted = isFixedOrDialog(node);
-      if (hasVideo && coversViewport(node) && (lifted || (named && !(node.closest && node.closest('article'))))) {
-        return node;
-      }
-      node = node.parentElement;
-    }
-    return null;
+    var player = playerFrom(el);
+    if (!player) return null;
+    var video = player.tagName === 'VIDEO' ? player : player.querySelector && player.querySelector('video');
+    if (!isBigVideoBox(video || player) && !isBigVideoBox(player)) return null;
+    var article = player.closest && player.closest('article');
+    if (article && !hasLiftedAncestor(player)) return null;
+    return player;
   }
 
   function armReelLock(el) {
@@ -480,24 +514,43 @@ export const HIDE_REELS_SCRIPT = `
     swipe = null;
   }
 
-  window.addEventListener('touchstart', onSwipeStart, true);
-  window.addEventListener('touchmove', onSwipeMove, { capture: true, passive: false });
-  window.addEventListener('touchend', onSwipeEnd, { capture: true, passive: false });
-  window.addEventListener('touchcancel', onSwipeEnd, { capture: true, passive: false });
-  window.addEventListener('pointerdown', onSwipeStart, true);
-  window.addEventListener('pointermove', onSwipeMove, { capture: true, passive: false });
-  window.addEventListener('pointerup', onSwipeEnd, true);
-  window.addEventListener('pointercancel', onSwipeEnd, true);
-  window.addEventListener('wheel', function (e) {
+  function onWheel(e) {
     if (!reelSurface(e.target)) return;
     if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
     blockGesture(e);
-  }, { capture: true, passive: false });
+  }
+
+  function listen(target, type, fn, passive) {
+    target.addEventListener(type, fn, passive ? true : { capture: true, passive: false });
+  }
+
+  listen(window, 'touchstart', onSwipeStart, true);
+  listen(window, 'touchmove', onSwipeMove, false);
+  listen(window, 'touchend', onSwipeEnd, false);
+  listen(window, 'touchcancel', onSwipeEnd, false);
+  listen(window, 'pointerdown', onSwipeStart, true);
+  listen(window, 'pointermove', onSwipeMove, false);
+  listen(window, 'pointerup', onSwipeEnd, true);
+  listen(window, 'pointercancel', onSwipeEnd, true);
+  listen(window, 'wheel', onWheel, false);
+  listen(document, 'touchstart', onSwipeStart, true);
+  listen(document, 'touchmove', onSwipeMove, false);
+  listen(document, 'touchend', onSwipeEnd, false);
+  listen(document, 'touchcancel', onSwipeEnd, false);
+  listen(document, 'wheel', onWheel, false);
+
+  function markOpenReels() {
+    var nodes = document.querySelectorAll('video, [aria-label]');
+    for (var i = 0; i < nodes.length; i++) {
+      if (reelSurface(nodes[i])) armReelLock(nodes[i]);
+    }
+    releaseStaleReelLocks();
+  }
 
   var previousApply = apply;
   apply = function () {
     previousApply();
-    releaseStaleReelLocks();
+    markOpenReels();
   };
 
   true;
