@@ -7,8 +7,9 @@
  * this module only; leave the WebView shell alone.
  *
  * Policy (locked): hide UI only. Do NOT block navigation to /reels or /reel/ URLs.
- * The Explore recommendation feed is hidden on /explore and /explore/search while the
- * search field is empty. A typed query, or /explore/tags|locations|places, shows results.
+ * The Explore recommendation feed, and the loading indicator beside it, are hidden on
+ * /explore and /explore/search while the search field is empty. A typed query, or
+ * /explore/tags|locations|places, shows results.
  */
 
 export const HIDE_REELS_SCRIPT = `
@@ -148,7 +149,7 @@ export const HIDE_REELS_SCRIPT = `
         for (var j = 0; j < parent.children.length; j++) {
           var sibling = parent.children[j];
           if (sibling === branch || isChrome(sibling)) continue;
-          if (hasExploreMedia(sibling)) found.push(sibling);
+          found.push(sibling);
         }
         return found;
       }
@@ -164,7 +165,18 @@ export const HIDE_REELS_SCRIPT = `
       return;
     }
 
-    var grids = exploreFeedNodes(findSearchField());
+    var searchField = findSearchField();
+    var grids = exploreFeedNodes(searchField);
+    var root = document.querySelector('main') || document.body;
+    var loaders = root.querySelectorAll(
+      '[role="progressbar"], [data-visualcompletion="loading-state"], [aria-label="Loading"], [aria-label="Loading…"], [aria-label="Loading..."]'
+    );
+    for (var p = 0; p < loaders.length; p++) {
+      var loader = loaders[p];
+      if (isChrome(loader)) continue;
+      if (searchField && (loader === searchField || searchField.contains(loader) || loader.contains(searchField))) continue;
+      grids.push(loader);
+    }
     if (!grids.length) {
       var main = document.querySelector('main') || document.body;
       var divs = main.querySelectorAll('div, section, article');
@@ -180,7 +192,7 @@ export const HIDE_REELS_SCRIPT = `
     for (var j = 0; j < grids.length; j++) {
       var nested = false;
       for (var k = 0; k < grids.length; k++) {
-        if (j !== k && grids[k].contains(grids[j])) {
+        if (j !== k && grids[k] !== grids[j] && grids[k].contains(grids[j])) {
           nested = true;
           break;
         }
